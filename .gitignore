@@ -1,0 +1,17 @@
+# 파이썬
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+
+# 임시·시스템 파일
+~$*
+*.tmp
+.DS_Store
+Thumbs.db
+
+# 비밀정보
+*.key
+credentials*.json
+token*.json
