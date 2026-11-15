@@ -1,0 +1,68 @@
+# 깃허브 용량 정리 — 3개월(90일) 지난 Actions 산출물·캐시·실행기록 자동 삭제
+# 실행: 매월 1일 오전 9시(한국시간) 자동 / Actions 탭에서 수동 실행 가능
+# 코드·문서·커밋 기록은 건드리지 않음
+name: 용량 정리 (3개월 기준)
+
+on:
+  schedule:
+    - cron: "0 0 1 * *"   # 매월 1일 00:00 UTC = 09:00 KST
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "보관 기간(일) — 이보다 오래된 기록 삭제"
+        default: "90"
+      dry_run:
+        description: "true면 삭제하지 않고 대상 목록만 표시"
+        default: "false"
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          script: |
+            const days = Number(context.payload.inputs?.days || 90);
+            const dry = (context.payload.inputs?.dry_run || "false") === "true";
+            const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
+            const { owner, repo } = context.repo;
+            const old = (d) => new Date(d).getTime() < cutoff;
+            const mb = (b) => (b / 1024 / 1024).toFixed(1);
+            let artN = 0, artB = 0, cacheN = 0, cacheB = 0, runN = 0;
+
+            // 1) 산출물(artifacts)
+            const arts = await github.paginate(github.rest.actions.listArtifactsForRepo, { owner, repo, per_page: 100 });
+            for (const a of arts.filter(a => old(a.created_at))) {
+              if (!dry) await github.rest.actions.deleteArtifact({ owner, repo, artifact_id: a.id });
+              artN++; artB += a.size_in_bytes;
+            }
+
+            // 2) 캐시(caches)
+            const caches = await github.paginate(github.rest.actions.getActionsCacheList, { owner, repo, per_page: 100 });
+            for (const c of caches.filter(c => old(c.last_accessed_at || c.created_at))) {
+              if (!dry) await github.rest.actions.deleteActionsCacheById({ owner, repo, cache_id: c.id });
+              cacheN++; cacheB += c.size_in_bytes;
+            }
+
+            // 3) 실행기록(workflow runs) — 현재 실행 중인 건 제외
+            const runs = await github.paginate(github.rest.actions.listWorkflowRunsForRepo, { owner, repo, per_page: 100 });
+            for (const r of runs.filter(r => old(r.created_at) && r.status === "completed" && r.id !== context.runId)) {
+              if (!dry) await github.rest.actions.deleteWorkflowRun({ owner, repo, run_id: r.id });
+              runN++;
+            }
+
+            const mode = dry ? "점검만(삭제 안 함)" : "삭제 완료";
+            await core.summary
+              .addHeading(`용량 정리 결과 — ${mode}`)
+              .addTable([
+                [{ data: "구분", header: true }, { data: "건수", header: true }, { data: "용량(MB)", header: true }],
+                ["산출물", String(artN), mb(artB)],
+                ["캐시", String(cacheN), mb(cacheB)],
+                ["실행기록", String(runN), "-"],
+              ])
+              .addRaw(`기준: ${days}일 이전 (${new Date(cutoff).toISOString().slice(0, 10)})`)
+              .write();
